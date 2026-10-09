@@ -1,0 +1,1890 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>TOME request flow</title>
+  <style>
+    :root {
+      --background: #f6f5f2;
+      --foreground: #1c1c1a;
+      --card: #ffffff;
+      --muted: #eeede8;
+      --muted-foreground: #5f5e58;
+      --blue: #1d6fbf;
+      --purple: #6d4ea8;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --background: #141413;
+        --foreground: #f3f2ec;
+        --card: #1e1e1c;
+        --muted: #2a2a27;
+        --muted-foreground: #b0aea6;
+        --blue: #8ec0f5;
+        --purple: #cbb8ee;
+        color-scheme: dark;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--background);
+      color: var(--foreground);
+      font: 16px/1.5 ui-sans-serif, system-ui, sans-serif;
+    }
+    main {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+    h1, h2 {
+      font-size: 1.5rem;
+      font-weight: 500;
+      line-height: 1.3;
+      margin: 0;
+    }
+    h2 { font-size: 1.25rem; }
+    .lead {
+      margin: 8px 0 0;
+      max-width: 68ch;
+      color: var(--muted-foreground);
+    }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      margin: 20px 0 12px;
+    }
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .swatch {
+      width: 22px;
+      height: 0;
+      border-top: 2px solid var(--blue);
+      display: inline-block;
+    }
+    .swatch.live { border-top-style: dashed; }
+    .swatch.request { border-top-color: var(--purple); border-top-style: solid; }
+    .swatch.direct { border-top-color: var(--purple); border-top-style: solid; }
+    #flow .stage {
+      position: relative;
+      container-type: inline-size;
+      width: 100%;
+      margin-top: 8px;
+    }
+    #flow .map {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      justify-items: center;
+      align-items: center;
+      row-gap: 56px;
+      grid-template-columns: 1fr;
+      grid-template-areas:
+        "sources"
+        "dynamic"
+        "mid"
+        "assistants"
+        "mcp"
+        "user";
+    }
+    #flow .sources { grid-area: sources; }
+    #flow .dynamic { grid-area: dynamic; }
+    #flow .mid {
+      grid-area: mid;
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 48px;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+    }
+    #flow .assistants { grid-area: assistants; }
+    #flow .mcp { grid-area: mcp; }
+    #flow .user { grid-area: user; }
+    #flow .live-label {
+      display: block;
+      text-align: center;
+      color: var(--muted-foreground);
+      font-size: 0.875rem;
+      margin-bottom: 8px;
+    }
+    #flow .source-row {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 12px;
+    }
+    #flow .src,
+    #flow .node {
+      border: 1px solid var(--foreground);
+      border-radius: 8px;
+      background: var(--card);
+      padding: 10px 14px;
+      text-align: center;
+    }
+    #flow .src { background: var(--muted); }
+    #flow .dynamic {
+      width: min(100%, 280px);
+      background: color-mix(in srgb, var(--blue) 14%, var(--card));
+    }
+    #flow .assistants,
+    #flow .mcp {
+      background: color-mix(in srgb, var(--purple) 14%, var(--card));
+    }
+    #flow .assistants { width: min(100%, 200px); }
+    #flow .tome { width: min(100%, 120px); }
+    #flow .user {
+      width: 76px;
+      border-radius: 999px;
+      padding: 10px 8px 8px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+    }
+    #flow .user-icon { width: 16px; height: 16px; display: block; }
+    #flow .wires {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+      z-index: 0;
+      pointer-events: none;
+    }
+    #flow .step {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 22px;
+      height: 22px;
+      border: 1px solid var(--foreground);
+      border-radius: 50%;
+      background: var(--background);
+      display: grid;
+      place-items: center;
+      z-index: 3;
+      pointer-events: none;
+      font-size: 0.75rem;
+      visibility: hidden;
+    }
+    #flow[data-ready="true"] .step { visibility: visible; }
+    #flow[data-phase="2"] .step[data-step="1"],
+    #flow[data-phase="3"] .step[data-step="2"],
+    #flow[data-phase="4"] .step[data-step="3"] {
+      outline: 2px solid var(--purple);
+      outline-offset: 2px;
+    }
+    #flow .particle {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      z-index: 2;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    #flow .particle.live { background: var(--blue); }
+    #flow .particle.req { background: var(--purple); }
+    #flow .is-hot { outline: 2px solid var(--blue); outline-offset: 2px; }
+    #flow .is-hot-req { outline: 2px solid var(--purple); outline-offset: 2px; }
+    #flow .wire { fill: none; stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+    #flow .wire-live { stroke: var(--blue); stroke-dasharray: 4 5; }
+    #flow .wire-request { stroke: var(--purple); }
+    #flow[data-phase="1"] .wire-request,
+    #flow[data-phase="2"] .wire-live,
+    #flow[data-phase="2"] .wire-step-2,
+    #flow[data-phase="2"] .wire-step-3,
+    #flow[data-phase="3"] .wire-live,
+    #flow[data-phase="3"] .wire-step-1,
+    #flow[data-phase="3"] .wire-step-3,
+    #flow[data-phase="4"] .wire-live,
+    #flow[data-phase="4"] .wire-step-1,
+    #flow[data-phase="4"] .wire-step-2 {
+      stroke: var(--muted-foreground);
+    }
+    #flow[data-phase="1"] .wire-live,
+    #flow[data-phase="2"] .wire-step-1,
+    #flow[data-phase="3"] .wire-step-2,
+    #flow[data-phase="4"] .wire-step-3 {
+      stroke-width: 2.5px;
+    }
+    .actions { margin-top: 20px; }
+    button {
+      font: inherit;
+      background: var(--foreground);
+      color: var(--background);
+      border: 0;
+      border-radius: 8px;
+      padding: 8px 14px;
+      cursor: pointer;
+    }
+    button:focus-visible {
+      outline: 2px solid var(--foreground);
+      outline-offset: 2px;
+    }
+    .note {
+      margin: 16px 0 0;
+      color: var(--muted-foreground);
+      font-size: 0.875rem;
+    }
+    .notes {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 24px;
+      margin: 16px 0 0;
+      color: var(--muted-foreground);
+      font-size: 0.875rem;
+    }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    @container (min-width: 760px) {
+      #flow .map {
+        grid-template-columns: minmax(0, 1fr) auto minmax(160px, 1fr) auto;
+        column-gap: 52px;
+        row-gap: 64px;
+        grid-template-areas:
+          "sources sources sources sources"
+          ". dynamic . ."
+          "static tome assistants user"
+          ". . mcp user";
+      }
+      #flow .mid { display: contents; }
+      #flow .static { grid-area: static; justify-self: end; }
+      #flow .tome { grid-area: tome; }
+      #flow .assistants { justify-self: start; }
+      #flow .mcp { justify-self: start; }
+    }
+    .agent-section {
+      margin-top: 48px;
+      padding-top: 32px;
+      border-top: 1px solid var(--muted);
+    }
+    #agent .stage {
+      position: relative;
+      container-type: inline-size;
+      width: 100%;
+      margin-top: 8px;
+    }
+    #agent .map {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      justify-items: center;
+      row-gap: 64px;
+    }
+    #agent .source-row {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 12px;
+    }
+    #agent .src,
+    #agent .node {
+      border: 1px solid var(--foreground);
+      border-radius: 8px;
+      background: var(--card);
+      padding: 10px 14px;
+      text-align: center;
+    }
+    #agent .src { background: var(--muted); }
+    #agent .agent {
+      width: min(100%, 140px);
+      background: color-mix(in srgb, var(--purple) 14%, var(--card));
+    }
+    #agent .row {
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 72px;
+      width: 100%;
+      align-items: center;
+      justify-content: center;
+    }
+    @container (max-width: 320px) {
+      #agent .row { flex-direction: column; }
+    }
+    #agent .user {
+      width: 76px;
+      border-radius: 999px;
+      padding: 10px 8px 8px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+    }
+    #agent .user-icon { width: 16px; height: 16px; display: block; }
+    #agent .wires {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+      z-index: 0;
+      pointer-events: none;
+    }
+    #agent .step {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 22px;
+      height: 22px;
+      border: 1px solid var(--foreground);
+      border-radius: 50%;
+      background: var(--background);
+      display: grid;
+      place-items: center;
+      z-index: 3;
+      pointer-events: none;
+      font-size: 0.75rem;
+      visibility: hidden;
+    }
+    #agent[data-ready="true"] .step { visibility: visible; }
+    #agent[data-phase="1"] .step[data-step="1"],
+    #agent[data-phase="2"] .step[data-step="2"] {
+      outline: 2px solid var(--purple);
+      outline-offset: 2px;
+    }
+    #agent .particle {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      z-index: 2;
+      visibility: hidden;
+      pointer-events: none;
+      background: var(--purple);
+    }
+    #agent .is-hot-req { outline: 2px solid var(--purple); outline-offset: 2px; }
+    #agent .wire { fill: none; stroke: var(--purple); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+    #agent[data-phase="1"] .wire-step-2,
+    #agent[data-phase="2"] .wire-step-1 { stroke: var(--muted-foreground); }
+    #agent[data-phase="1"] .wire-step-1,
+    #agent[data-phase="2"] .wire-step-2 { stroke-width: 2.5px; }
+    #prop .stage { position: relative; container-type: inline-size; width: 100%; margin-top: 8px; }
+    #prop .canvas { position: relative; z-index: 1; }
+    #prop .sources {
+      width: fit-content;
+      max-width: 100%;
+      margin-inline: auto;
+    }
+    #prop .label-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 16px;
+      margin-bottom: 6px;
+    }
+    #prop .rail-label { font-size: 0.8125rem; line-height: 1.2; }
+    #prop .rail-label.update { color: var(--blue); }
+    #prop .rail-label.request { color: var(--purple); text-align: right; }
+    #prop .source-row, #prop .channels, #prop .pages {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 12px;
+    }
+    #prop .pages, #prop .channels { flex-direction: column; align-items: center; gap: 48px; }
+    #prop .body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 48px;
+      margin-top: 56px;
+    }
+    #prop .src, #prop .node {
+      border: 1px solid var(--foreground);
+      border-radius: 8px;
+      background: var(--card);
+      padding: 10px 14px;
+      text-align: center;
+    }
+    #prop .src { background: var(--muted); }
+    #prop .dynamic { background: color-mix(in srgb, var(--blue) 14%, var(--card)); width: min(100%, 220px); }
+    #prop .channel { background: color-mix(in srgb, var(--purple) 14%, var(--card)); width: min(100%, 140px); }
+    #prop .tome { width: min(100%, 120px); }
+    #prop .user {
+      width: 76px;
+      border-radius: 999px;
+      padding: 10px 8px 8px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+    }
+    #prop .user-icon { width: 16px; height: 16px; display: block; }
+    #prop .wires {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      overflow: visible; z-index: 0; pointer-events: none;
+    }
+    #prop .step {
+      position: absolute; left: 0; top: 0; width: 22px; height: 22px;
+      border: 1px solid var(--foreground); border-radius: 50%;
+      background: var(--background); display: grid; place-items: center;
+      z-index: 3; pointer-events: none; font-size: 0.75rem; visibility: hidden;
+    }
+    #prop[data-ready="true"] .step { visibility: visible; }
+    #prop[data-phase="2"] .step[data-step="1"],
+    #prop[data-phase="3"] .step[data-step="2"],
+    #prop[data-phase="4"] .step[data-mark^="src-"],
+    #prop[data-phase="5"] .step[data-mark="dynamic"],
+    #prop[data-phase="5"] .step[data-mark="static"] {
+      outline: 2px solid var(--purple);
+      outline-offset: 2px;
+    }
+    #prop .particle {
+      position: absolute; left: 0; top: 0; width: 8px; height: 8px; border-radius: 50%;
+      z-index: 2; visibility: hidden; pointer-events: none;
+    }
+    #prop .particle.live { background: var(--blue); }
+    #prop .particle.req { background: var(--purple); }
+    #prop .is-hot { outline: 2px solid var(--blue); outline-offset: 2px; }
+    #prop .is-hot-req { outline: 2px solid var(--purple); outline-offset: 2px; }
+    #prop .wire { fill: none; stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+    #prop .wire-live { stroke: var(--blue); stroke-dasharray: 4 5; }
+    #prop .wire-direct { stroke: var(--purple); }
+    #prop .wire-request { stroke: var(--purple); }
+    #prop[data-phase="1"] .wire-direct,
+    #prop[data-phase="1"] .wire-request,
+    #prop[data-phase="2"] .wire-live,
+    #prop[data-phase="2"] .wire-direct,
+    #prop[data-phase="2"] .wire-step-2,
+    #prop[data-phase="2"] .wire-step-3,
+    #prop[data-phase="3"] .wire-live,
+    #prop[data-phase="3"] .wire-direct,
+    #prop[data-phase="3"] .wire-step-1,
+    #prop[data-phase="3"] .wire-step-3,
+    #prop[data-phase="4"] .wire-live,
+    #prop[data-phase="4"] .wire-request,
+    #prop[data-phase="5"] .wire-live,
+    #prop[data-phase="5"] .wire-direct,
+    #prop[data-phase="5"] .wire-step-1,
+    #prop[data-phase="5"] .wire-step-2 { stroke: var(--muted-foreground); }
+    #prop[data-phase="1"] .wire-live,
+    #prop[data-phase="2"] .wire-step-1,
+    #prop[data-phase="3"] .wire-step-2,
+    #prop[data-phase="4"] .wire-direct,
+    #prop[data-phase="5"] .wire-step-3 { stroke-width: 2.5px; }
+    @container (min-width: 860px) {
+      #prop .body {
+        display: grid;
+        grid-template-columns: auto auto minmax(48px, 1fr) auto;
+        align-items: center;
+        column-gap: 52px;
+        margin-top: 72px;
+      }
+      #prop .channels { justify-self: start; align-items: flex-start; gap: 28px; }
+      #prop .pages { align-items: flex-end; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #flow .particle, #agent .particle, #prop .particle { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>TOME reads the pages</h1>
+    <p class="lead">A request through Multiple Assistants or MCP reaches TOME. TOME reads static pages or dynamic pages. Dynamic pages are a template synthesis of live source updates.</p>
+    <div id="flow" data-phase="0">
+      <p class="sr-only">Sources live-update dynamic pages, which are templates. A user requests through Multiple Assistants or MCP. That request reaches TOME, which reads static pages or dynamic pages. Webex means configured channels.</p>
+      <div class="legend">
+        <span><i class="swatch live" aria-hidden="true"></i>Live update</span>
+        <span><i class="swatch request" aria-hidden="true"></i>Request</span>
+      </div>
+      <div class="stage" id="flow-stage" role="group" aria-label="User request through assistants or MCP, then TOME reads static or dynamic pages">
+        <div class="map">
+          <div class="sources">
+            <span class="live-label">Live updates to dynamic pages</span>
+            <div class="source-row">
+              <span class="src" data-source="0">Github</span>
+              <span class="src" data-source="1">Webex*</span>
+              <span class="src" data-source="2">Webex meetings</span>
+              <span class="src" data-source="3">Sharepoint</span>
+              <span class="src" data-source="4">Confluence</span>
+            </div>
+          </div>
+          <div class="node dynamic" data-node="dynamic">Dynamic Pages (templates)</div>
+          <div class="mid">
+            <div class="node static" data-node="static">Static Pages</div>
+            <div class="node tome" data-node="tome">TOME</div>
+          </div>
+          <div class="node assistants" data-node="assistants">Multiple Assistants</div>
+          <div class="node mcp" data-node="mcp">MCP</div>
+          <div class="node user" data-node="user">
+            <svg class="user-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="8" cy="5" r="2.25" fill="none" stroke="currentColor" stroke-width="1.5"></circle>
+              <path d="M3.5 13.2c.7-2.2 2.4-3.2 4.5-3.2s3.8 1 4.5 3.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+            </svg>
+            <span>User</span>
+          </div>
+        </div>
+        <svg class="wires" aria-hidden="true">
+          <defs>
+            <marker id="flow-arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M0 0 L10 5 L0 10 Z" fill="var(--blue)"></path>
+            </marker>
+            <marker id="flow-arrow-purple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M0 0 L10 5 L0 10 Z" fill="var(--purple)"></path>
+            </marker>
+            <marker id="flow-arrow-muted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M0 0 L10 5 L0 10 Z" fill="var(--muted-foreground)"></path>
+            </marker>
+          </defs>
+          <g id="flow-wires"></g>
+        </svg>
+        <span class="step" data-step="1" data-mark="user-assistants">1</span>
+        <span class="step" data-step="1" data-mark="user-mcp">1</span>
+        <span class="step" data-step="2" data-mark="assistants-tome">2</span>
+        <span class="step" data-step="2" data-mark="mcp-tome">2</span>
+        <span class="step" data-step="3" data-mark="tome-dynamic">3</span>
+        <span class="step" data-step="3" data-mark="tome-static">3</span>
+        <span class="particle live" data-particle="0" aria-hidden="true"></span>
+        <span class="particle live" data-particle="1" aria-hidden="true"></span>
+        <span class="particle live" data-particle="2" aria-hidden="true"></span>
+        <span class="particle live" data-particle="3" aria-hidden="true"></span>
+        <span class="particle live" data-particle="4" aria-hidden="true"></span>
+        <span class="particle req" data-particle="user" aria-hidden="true"></span>
+        <span class="particle req" data-particle="assistants" aria-hidden="true"></span>
+        <span class="particle req" data-particle="mcp" aria-hidden="true"></span>
+        <span class="particle req" data-particle="dynamic" aria-hidden="true"></span>
+        <span class="particle req" data-particle="static" aria-hidden="true"></span>
+      </div>
+      <div class="actions">
+        <button type="button" id="flow-play">Play request</button>
+      </div>
+      <p class="sr-only" id="flow-status" aria-live="polite" hidden></p>
+      <p class="note">* Configured channels</p>
+    </div>
+    <section class="agent-section" aria-labelledby="agent-title">
+      <h2 id="agent-title">MyAgent queries sources</h2>
+      <p class="lead">A request to the MyAgent assistant queries Webex, Sharepoint, and Confluence directly.</p>
+      <div id="agent" data-phase="0">
+        <p class="sr-only">A user requests MyAgent. MyAgent queries Webex, Sharepoint, and Confluence. Webex means the user's channels and conversations.</p>
+        <div class="legend">
+          <span><i class="swatch request" aria-hidden="true"></i>Request</span>
+        </div>
+        <div class="stage" id="agent-stage" role="group" aria-label="User request to MyAgent, which queries sources directly">
+          <div class="map">
+            <div class="source-row">
+              <span class="src" data-source="webex">Webex*</span>
+              <span class="src" data-source="sharepoint">Sharepoint</span>
+              <span class="src" data-source="confluence">Confluence</span>
+            </div>
+            <div class="row">
+              <div class="node agent" data-node="agent">MyAgent</div>
+              <div class="node user" data-node="user">
+                <svg class="user-icon" viewBox="0 0 16 16" aria-hidden="true">
+                  <circle cx="8" cy="5" r="2.25" fill="none" stroke="currentColor" stroke-width="1.5"></circle>
+                  <path d="M3.5 13.2c.7-2.2 2.4-3.2 4.5-3.2s3.8 1 4.5 3.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+                </svg>
+                <span>User</span>
+              </div>
+            </div>
+          </div>
+          <svg class="wires" aria-hidden="true">
+            <defs>
+              <marker id="agent-arrow-purple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+                <path d="M0 0 L10 5 L0 10 Z" fill="var(--purple)"></path>
+              </marker>
+              <marker id="agent-arrow-muted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+                <path d="M0 0 L10 5 L0 10 Z" fill="var(--muted-foreground)"></path>
+              </marker>
+            </defs>
+            <g id="agent-wires"></g>
+          </svg>
+          <span class="step" data-step="1" data-mark="user">1</span>
+          <span class="step" data-step="2" data-mark="webex">2</span>
+          <span class="step" data-step="2" data-mark="sharepoint">2</span>
+          <span class="step" data-step="2" data-mark="confluence">2</span>
+          <span class="particle" data-particle="user" aria-hidden="true"></span>
+          <span class="particle" data-particle="webex" aria-hidden="true"></span>
+          <span class="particle" data-particle="sharepoint" aria-hidden="true"></span>
+          <span class="particle" data-particle="confluence" aria-hidden="true"></span>
+        </div>
+        <div class="actions">
+          <button type="button" id="agent-play">Play request</button>
+        </div>
+        <p class="sr-only" id="agent-status" aria-live="polite" hidden></p>
+        <p class="note">* User's channels &amp; conversations</p>
+      </div>
+    </section>
+    <section class="agent-section" aria-labelledby="prop-title">
+      <h2 id="prop-title">TOME queries sources and pages</h2>
+      <p class="lead">A request through Assistant, MyAgent, or MCP reaches TOME. TOME queries the sources, the static pages, and the dynamic pages. Dynamic pages are pulled live from the sources.</p>
+      <div id="prop" data-phase="0">
+        <p class="sr-only">Sources pull dynamic pages live. A user requests through Assistant, MyAgent, or MCP. The request reaches TOME, which queries sources, static pages, and dynamic pages. Webex means configured channels. Dynamic pages include curated summaries and optional reference templates.</p>
+        <div class="legend">
+          <span><i class="swatch live" aria-hidden="true"></i>Live update</span>
+          <span><i class="swatch direct" aria-hidden="true"></i>Live request</span>
+          <span><i class="swatch request" aria-hidden="true"></i>Request</span>
+        </div>
+        <div class="stage" id="prop-stage" role="group" aria-label="Request reaches TOME, which queries sources, static pages, and dynamic pages">
+          <div class="canvas">
+            <div class="sources">
+              <div class="label-row">
+                <span class="rail-label update">Live updates to dynamic pages</span>
+                <span class="rail-label request">Live request</span>
+              </div>
+              <div class="source-row">
+                <span class="src" data-source="0">Github</span>
+                <span class="src" data-source="1">Webex*</span>
+                <span class="src" data-source="2">Webex meetings</span>
+                <span class="src" data-source="3">Sharepoint</span>
+                <span class="src" data-source="4">Confluence</span>
+              </div>
+            </div>
+            <div class="body">
+              <div class="pages">
+                <div class="node dynamic" data-node="dynamic">Dynamic Pages **</div>
+                <div class="node static" data-node="static">Static Pages</div>
+              </div>
+              <div class="node tome" data-node="tome">TOME</div>
+              <div class="channels">
+                <div class="node channel" data-node="assistant">Assistant</div>
+                <div class="node channel" data-node="myagent">MyAgent</div>
+                <div class="node channel" data-node="mcp">MCP</div>
+              </div>
+              <div class="node user" data-node="user">
+                <svg class="user-icon" viewBox="0 0 16 16" aria-hidden="true">
+                  <circle cx="8" cy="5" r="2.25" fill="none" stroke="currentColor" stroke-width="1.5"></circle>
+                  <path d="M3.5 13.2c.7-2.2 2.4-3.2 4.5-3.2s3.8 1 4.5 3.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+                </svg>
+                <span>User</span>
+              </div>
+            </div>
+          </div>
+          <svg class="wires" aria-hidden="true">
+            <defs>
+              <marker id="prop-arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+                <path d="M0 0 L10 5 L0 10 Z" fill="var(--blue)"></path>
+              </marker>
+              <marker id="prop-arrow-purple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+                <path d="M0 0 L10 5 L0 10 Z" fill="var(--purple)"></path>
+              </marker>
+              <marker id="prop-arrow-muted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+                <path d="M0 0 L10 5 L0 10 Z" fill="var(--muted-foreground)"></path>
+              </marker>
+            </defs>
+            <g id="prop-wires"></g>
+          </svg>
+          <span class="step" data-step="1" data-mark="assistant">1</span>
+          <span class="step" data-step="1" data-mark="myagent">1</span>
+          <span class="step" data-step="1" data-mark="mcp">1</span>
+          <span class="step" data-step="2" data-mark="assistant-tome">2</span>
+          <span class="step" data-step="2" data-mark="myagent-tome">2</span>
+          <span class="step" data-step="2" data-mark="mcp-tome">2</span>
+          <span class="step" data-step="3" data-mark="dynamic">3</span>
+          <span class="step" data-step="3" data-mark="static">3</span>
+          <span class="step" data-step="3" data-mark="src-0">3</span>
+          <span class="step" data-step="3" data-mark="src-1">3</span>
+          <span class="step" data-step="3" data-mark="src-2">3</span>
+          <span class="step" data-step="3" data-mark="src-3">3</span>
+          <span class="step" data-step="3" data-mark="src-4">3</span>
+          <span class="particle live" data-particle="u0" aria-hidden="true"></span>
+          <span class="particle live" data-particle="u1" aria-hidden="true"></span>
+          <span class="particle live" data-particle="u2" aria-hidden="true"></span>
+          <span class="particle live" data-particle="u3" aria-hidden="true"></span>
+          <span class="particle live" data-particle="u4" aria-hidden="true"></span>
+          <span class="particle req" data-particle="user" aria-hidden="true"></span>
+          <span class="particle req" data-particle="channel" aria-hidden="true"></span>
+          <span class="particle req" data-particle="query" aria-hidden="true"></span>
+        </div>
+        <div class="actions">
+          <button type="button" id="prop-play">Play request</button>
+        </div>
+        <p class="sr-only" id="prop-status" aria-live="polite" hidden></p>
+        <div class="notes">
+          <span>* Configured channels</span>
+          <span>** With curated summaries &amp; optional reference templates</span>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script>
+(function () {
+  var root = document.getElementById("flow");
+  var stage = document.getElementById("flow-stage");
+  var svg = stage.querySelector("svg.wires");
+  var wireGroup = document.getElementById("flow-wires");
+  var button = document.getElementById("flow-play");
+  var statusEl = document.getElementById("flow-status");
+  var sourceEls = Array.prototype.slice.call(stage.querySelectorAll(".src"));
+  var sourceRow = stage.querySelector(".source-row");
+  var node = {};
+  ["dynamic", "static", "tome", "assistants", "mcp", "user"].forEach(function (name) {
+    node[name] = stage.querySelector('[data-node="' + name + '"]');
+  });
+  var stepEls = {};
+  Array.prototype.forEach.call(stage.querySelectorAll(".step"), function (el) {
+    stepEls[el.getAttribute("data-mark")] = el;
+  });
+  var particles = {};
+  Array.prototype.forEach.call(stage.querySelectorAll(".particle"), function (el) {
+    particles[el.getAttribute("data-particle")] = el;
+  });
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+  var layout = null;
+  var runId = 0;
+  var anims = [];
+  var cancelers = [];
+
+  function rectOf(el) {
+    var s = stage.getBoundingClientRect();
+    var a = el.getBoundingClientRect();
+    return {
+      left: a.left - s.left,
+      top: a.top - s.top,
+      right: a.right - s.left,
+      bottom: a.bottom - s.top,
+      cx: a.left - s.left + a.width / 2,
+      cy: a.top - s.top + a.height / 2
+    };
+  }
+
+  function clamp(n, min, max) {
+    return Math.max(min, Math.min(max, n));
+  }
+
+  function round(n) {
+    return Math.round(n * 10) / 10;
+  }
+
+  function pathD(points) {
+    return points.map(function (p, i) {
+      return (i === 0 ? "M" : "L") + round(p.x) + " " + round(p.y);
+    }).join(" ");
+  }
+
+  function hits(x, y1, y2, rects, self) {
+    var top = Math.min(y1, y2);
+    var bot = Math.max(y1, y2);
+    for (var i = 0; i < rects.length; i++) {
+      var r = rects[i];
+      if (r === self) continue;
+      if (x < r.left - 4 || x > r.right + 4) continue;
+      if (bot > r.top + 2 && top < r.bottom - 2) return true;
+    }
+    return false;
+  }
+
+  function markerFor(kind, step) {
+    var phase = root.getAttribute("data-phase") || "0";
+    if (kind === "live") return phase === "0" || phase === "1" ? "url(#flow-arrow-blue)" : "url(#flow-arrow-muted)";
+    var on = phase === "0" || (phase === "2" && step === "1") || (phase === "3" && step === "2") || (phase === "4" && step === "3");
+    return on ? "url(#flow-arrow-purple)" : "url(#flow-arrow-muted)";
+  }
+
+  function addWire(points, kind, step) {
+    var path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", pathD(points));
+    path.setAttribute("class", "wire wire-" + kind + (step ? " wire-step-" + step : ""));
+    path.setAttribute("fill", "none");
+    path.setAttribute("vector-effect", "non-scaling-stroke");
+    path.setAttribute("marker-end", markerFor(kind, step));
+    wireGroup.appendChild(path);
+  }
+
+  function placeStep(el, x, y, w, h) {
+    el.style.transform = "translate(" + round(clamp(x, 0, Math.max(0, w - 22))) + "px, " + round(clamp(y, 0, Math.max(0, h - 22))) + "px)";
+  }
+
+  function labelOf(points) {
+    var best = 0;
+    var bi = 1;
+    for (var i = 1; i < points.length; i++) {
+      var len = Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+      if (len > best) {
+        best = len;
+        bi = i;
+      }
+    }
+    var a = points[bi - 1];
+    var b = points[bi];
+    var mx = (a.x + b.x) / 2;
+    var my = (a.y + b.y) / 2;
+    if (Math.abs(b.x - a.x) >= Math.abs(b.y - a.y)) return { x: mx - 11, y: my - 28 };
+    return { x: mx + 10, y: my - 11 };
+  }
+
+  function hLine(x1, y1, x2, y2) {
+    if (Math.abs(y1 - y2) < 6) return [{ x: x1, y: y1 }, { x: x2, y: y1 }];
+    var mid = (x1 + x2) / 2;
+    return [{ x: x1, y: y1 }, { x: mid, y: y1 }, { x: mid, y: y2 }, { x: x2, y: y2 }];
+  }
+
+  function measure() {
+    var w = stage.clientWidth;
+    var h = stage.clientHeight;
+    if (w < 8 || h < 8) return null;
+    var src = sourceEls.map(rectOf);
+    var box = {
+      dynamic: rectOf(node.dynamic),
+      static: rectOf(node.static),
+      tome: rectOf(node.tome),
+      assistants: rectOf(node.assistants),
+      mcp: rectOf(node.mcp),
+      user: rectOf(node.user)
+    };
+    var wrap = rectOf(sourceRow);
+    var railY = wrap.bottom + (box.dynamic.top - wrap.bottom) * 0.62;
+    var live = src.map(function (s, i) {
+      var landX = box.dynamic.left + 24 + (i * (box.dynamic.right - box.dynamic.left - 48)) / 4;
+      var pts = [{ x: s.cx, y: s.bottom }];
+      if (hits(s.cx, s.bottom, railY, src, s)) {
+        var laneX = s.cx < w / 2 ? 28 : w - 28;
+        pts.push({ x: s.cx, y: s.bottom + 8 });
+        pts.push({ x: laneX, y: s.bottom + 8 });
+        pts.push({ x: laneX, y: railY });
+      } else {
+        pts.push({ x: s.cx, y: railY });
+      }
+      pts.push({ x: landX, y: railY });
+      pts.push({ x: landX, y: box.dynamic.top });
+      return pts;
+    });
+    var side = box.assistants.left > box.tome.right + 8;
+    var userToAssistants;
+    var userToMcp;
+    var assistantsToTome;
+    var mcpToTome;
+    var tomeToDynamic;
+    var tomeToStatic;
+    if (side) {
+      var gapX = (box.assistants.right + box.user.left) / 2;
+      userToAssistants = [
+        { x: box.user.left, y: box.user.cy },
+        { x: gapX, y: box.user.cy },
+        { x: gapX, y: box.assistants.cy },
+        { x: box.assistants.right, y: box.assistants.cy }
+      ];
+      userToMcp = [
+        { x: box.user.left, y: box.user.cy },
+        { x: gapX, y: box.user.cy },
+        { x: gapX, y: box.mcp.cy },
+        { x: box.mcp.right, y: box.mcp.cy }
+      ];
+      assistantsToTome = hLine(box.assistants.left, box.assistants.cy, box.tome.right, box.tome.cy);
+      mcpToTome = [
+        { x: box.mcp.left, y: box.mcp.cy },
+        { x: box.tome.cx, y: box.mcp.cy },
+        { x: box.tome.cx, y: box.tome.bottom }
+      ];
+      tomeToDynamic = [
+        { x: box.tome.cx, y: box.tome.top },
+        { x: box.tome.cx, y: (box.tome.top + box.dynamic.bottom) / 2 },
+        { x: box.dynamic.cx, y: (box.tome.top + box.dynamic.bottom) / 2 },
+        { x: box.dynamic.cx, y: box.dynamic.bottom }
+      ];
+      tomeToStatic = hLine(box.tome.left, box.tome.cy, box.static.right, box.static.cy);
+    } else {
+      var leftLane = Math.max(8, Math.min(box.user.left, box.mcp.left, box.assistants.left, box.tome.left) - 18);
+      var rightLane = Math.min(w - 8, Math.max(box.user.right, box.mcp.right, box.assistants.right, box.tome.right) + 18);
+      userToMcp = [
+        { x: box.user.cx, y: box.user.top },
+        { x: box.mcp.cx, y: box.mcp.bottom }
+      ];
+      userToAssistants = [
+        { x: box.user.left, y: box.user.cy },
+        { x: leftLane, y: box.user.cy },
+        { x: leftLane, y: box.assistants.cy },
+        { x: box.assistants.left, y: box.assistants.cy }
+      ];
+      var joinAssistants = (box.assistants.top + box.tome.bottom) / 2;
+      assistantsToTome = [
+        { x: box.assistants.cx, y: box.assistants.top },
+        { x: box.assistants.cx, y: joinAssistants },
+        { x: box.tome.cx, y: joinAssistants },
+        { x: box.tome.cx, y: box.tome.bottom }
+      ];
+      mcpToTome = [
+        { x: box.mcp.right, y: box.mcp.cy },
+        { x: rightLane, y: box.mcp.cy },
+        { x: rightLane, y: box.tome.cy },
+        { x: box.tome.right, y: box.tome.cy }
+      ];
+      var dynJoin = (box.tome.top + box.dynamic.bottom) / 2;
+      var staticBetween = box.static.top < box.tome.top && box.static.bottom > box.dynamic.bottom && box.tome.cx > box.static.left && box.tome.cx < box.static.right;
+      if (staticBetween) {
+        var lane = Math.min(w - 8, Math.max(box.static.right, box.tome.right, box.dynamic.right) + 16);
+        tomeToDynamic = [
+          { x: box.tome.right, y: box.tome.cy },
+          { x: lane, y: box.tome.cy },
+          { x: lane, y: box.dynamic.cy },
+          { x: box.dynamic.right, y: box.dynamic.cy }
+        ];
+      } else {
+        tomeToDynamic = [
+          { x: box.tome.cx, y: box.tome.top },
+          { x: box.tome.cx, y: dynJoin },
+          { x: box.dynamic.cx, y: dynJoin },
+          { x: box.dynamic.cx, y: box.dynamic.bottom }
+        ];
+      }
+      if (box.static.bottom <= box.tome.top + 4) {
+        tomeToStatic = [
+          { x: box.tome.cx, y: box.tome.top },
+          { x: box.static.cx, y: box.static.bottom }
+        ];
+      } else if (box.tome.bottom <= box.static.top + 4) {
+        tomeToStatic = [
+          { x: box.tome.cx, y: box.tome.bottom },
+          { x: box.static.cx, y: box.static.top }
+        ];
+      } else if (box.static.left >= box.tome.right - 4) {
+        tomeToStatic = hLine(box.tome.right, box.tome.cy, box.static.left, box.static.cy);
+      } else {
+        tomeToStatic = hLine(box.tome.left, box.tome.cy, box.static.right, box.static.cy);
+      }
+    }
+    var paths = {
+      live: live,
+      userToAssistants: userToAssistants,
+      userToMcp: userToMcp,
+      assistantsToTome: assistantsToTome,
+      mcpToTome: mcpToTome,
+      tomeToDynamic: tomeToDynamic,
+      tomeToStatic: tomeToStatic
+    };
+    return {
+      w: w,
+      h: h,
+      paths: paths,
+      labels: {
+        "user-assistants": labelOf(userToAssistants),
+        "user-mcp": labelOf(userToMcp),
+        "assistants-tome": labelOf(assistantsToTome),
+        "mcp-tome": labelOf(mcpToTome),
+        "tome-dynamic": labelOf(tomeToDynamic),
+        "tome-static": labelOf(tomeToStatic)
+      }
+    };
+  }
+
+  function draw() {
+    layout = measure();
+    if (!layout) return;
+    svg.setAttribute("viewBox", "0 0 " + layout.w + " " + layout.h);
+    svg.setAttribute("width", String(layout.w));
+    svg.setAttribute("height", String(layout.h));
+    wireGroup.textContent = "";
+    layout.paths.live.forEach(function (pts) { addWire(pts, "live"); });
+    addWire(layout.paths.userToAssistants, "request", "1");
+    addWire(layout.paths.userToMcp, "request", "1");
+    addWire(layout.paths.assistantsToTome, "request", "2");
+    addWire(layout.paths.mcpToTome, "request", "2");
+    addWire(layout.paths.tomeToDynamic, "request", "3");
+    addWire(layout.paths.tomeToStatic, "request", "3");
+    Object.keys(stepEls).forEach(function (key) {
+      var p = layout.labels[key];
+      placeStep(stepEls[key], p.x, p.y, layout.w, layout.h);
+    });
+    root.setAttribute("data-ready", "true");
+  }
+
+  function hideParticles() {
+    Object.keys(particles).forEach(function (key) {
+      particles[key].style.visibility = "hidden";
+    });
+  }
+
+  function clearHot() {
+    sourceEls.forEach(function (el) { el.classList.remove("is-hot"); });
+    Object.keys(node).forEach(function (key) {
+      node[key].classList.remove("is-hot", "is-hot-req");
+    });
+  }
+
+  function setStatus(text) {
+    statusEl.hidden = false;
+    statusEl.textContent = text;
+  }
+
+  function setPhase(phase) {
+    root.setAttribute("data-phase", String(phase));
+    draw();
+  }
+
+  function stopMotion() {
+    cancelers.forEach(function (fn) { fn(); });
+    cancelers = [];
+    anims.forEach(function (anim) {
+      anim.onfinish = null;
+      anim.oncancel = null;
+      anim.cancel();
+    });
+    anims = [];
+    hideParticles();
+  }
+
+  function wait(ms) {
+    return new Promise(function (resolve) {
+      var done = false;
+      function finish(ok) {
+        if (done) return;
+        done = true;
+        resolve(ok);
+      }
+      var t = setTimeout(function () { finish(true); }, ms);
+      cancelers.push(function () {
+        clearTimeout(t);
+        finish(false);
+      });
+    });
+  }
+
+  function duration(points) {
+    var len = 0;
+    for (var i = 1; i < points.length; i++) {
+      len += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+    }
+    return Math.max(360, Math.min(820, Math.round(len * 1.35)));
+  }
+
+  function runParticle(el, points, hold) {
+    return new Promise(function (resolve) {
+      if (reduced.matches || !points || points.length < 2) {
+        resolve(true);
+        return;
+      }
+      el.style.visibility = "visible";
+      var anim = el.animate(points.map(function (p) {
+        return { transform: "translate(" + round(p.x - 4) + "px, " + round(p.y - 4) + "px)" };
+      }), { duration: duration(points), easing: "linear", fill: "forwards" });
+      anims.push(anim);
+      var done = false;
+      function finish(ok) {
+        if (done) return;
+        done = true;
+        if (!hold) el.style.visibility = "hidden";
+        resolve(ok);
+      }
+      anim.onfinish = function () { finish(true); };
+      anim.oncancel = function () { finish(false); };
+      cancelers.push(function () { anim.cancel(); });
+    });
+  }
+
+  async function play() {
+    var my = ++runId;
+    stopMotion();
+    clearHot();
+    node.dynamic.classList.remove("is-fresh");
+    button.setAttribute("aria-busy", "true");
+    if (!layout) draw();
+    if (!layout) {
+      button.removeAttribute("aria-busy");
+      return;
+    }
+    setPhase(1);
+    setStatus("Sources update dynamic pages.");
+    node.dynamic.classList.add("is-hot");
+    if (reduced.matches) {
+      sourceEls.forEach(function (el) { el.classList.add("is-hot"); });
+      if (!(await wait(700)) || my !== runId) return;
+    } else {
+      for (var i = 0; i < sourceEls.length; i++) {
+        if (my !== runId) return;
+        sourceEls[i].classList.add("is-hot");
+        await runParticle(particles[String(i)], layout.paths.live[i]);
+        if (my !== runId) return;
+        sourceEls[i].classList.remove("is-hot");
+        if (!(await wait(70)) || my !== runId) return;
+      }
+    }
+    clearHot();
+    setPhase(2);
+    setStatus("User requests through Multiple Assistants.");
+    node.user.classList.add("is-hot-req");
+    node.assistants.classList.add("is-hot-req");
+    if (!(await runParticle(particles.user, layout.paths.userToAssistants)) || my !== runId) return;
+    if (!(await wait(reduced.matches ? 400 : 80)) || my !== runId) return;
+    setPhase(3);
+    node.tome.classList.add("is-hot-req");
+    if (!(await runParticle(particles.assistants, layout.paths.assistantsToTome)) || my !== runId) return;
+    if (!(await wait(reduced.matches ? 400 : 120)) || my !== runId) return;
+    node.assistants.classList.remove("is-hot-req");
+    setPhase(2);
+    setStatus("User requests through MCP.");
+    node.mcp.classList.add("is-hot-req");
+    if (!(await runParticle(particles.user, layout.paths.userToMcp)) || my !== runId) return;
+    if (!(await wait(reduced.matches ? 400 : 80)) || my !== runId) return;
+    setPhase(3);
+    if (!(await runParticle(particles.mcp, layout.paths.mcpToTome)) || my !== runId) return;
+    if (!(await wait(reduced.matches ? 400 : 140)) || my !== runId) return;
+    node.user.classList.remove("is-hot-req");
+    node.mcp.classList.remove("is-hot-req");
+    setPhase(4);
+    setStatus("TOME reads dynamic pages.");
+    node.dynamic.classList.add("is-hot-req");
+    if (!(await runParticle(particles.dynamic, layout.paths.tomeToDynamic, true)) || my !== runId) return;
+    if (!(await wait(reduced.matches ? 360 : 100)) || my !== runId) return;
+    if (!(await runParticle(particles.dynamic, layout.paths.tomeToDynamic.slice().reverse())) || my !== runId) return;
+    node.dynamic.classList.remove("is-hot-req");
+    setStatus("TOME reads static pages.");
+    node.static.classList.add("is-hot-req");
+    if (!(await runParticle(particles.static, layout.paths.tomeToStatic, true)) || my !== runId) return;
+    if (!(await wait(reduced.matches ? 360 : 100)) || my !== runId) return;
+    if (!(await runParticle(particles.static, layout.paths.tomeToStatic.slice().reverse())) || my !== runId) return;
+    if (my !== runId) return;
+    clearHot();
+    setPhase(0);
+    setStatus("TOME read static and dynamic pages.");
+    button.removeAttribute("aria-busy");
+  }
+
+  button.addEventListener("click", function () { play(); });
+  if (typeof ResizeObserver === "function") {
+    var observer = new ResizeObserver(function () {
+      runId++;
+      stopMotion();
+      clearHot();
+      button.removeAttribute("aria-busy");
+      if (root.getAttribute("data-phase") !== "0") setPhase(0);
+      else draw();
+    });
+    observer.observe(stage);
+  }
+  draw();
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(function () {
+      if (button.getAttribute("aria-busy") !== "true") draw();
+    });
+  }
+})();
+  </script>
+  <script>
+(function () {
+  var root = document.getElementById("agent");
+  var stage = document.getElementById("agent-stage");
+  var svg = stage.querySelector("svg.wires");
+  var wireGroup = document.getElementById("agent-wires");
+  var button = document.getElementById("agent-play");
+  var statusEl = document.getElementById("agent-status");
+  var sourceEls = Array.prototype.slice.call(stage.querySelectorAll(".src"));
+  var sourceRow = stage.querySelector(".source-row");
+  var agentEl = stage.querySelector('[data-node="agent"]');
+  var userEl = stage.querySelector('[data-node="user"]');
+  var stepEls = {};
+  Array.prototype.forEach.call(stage.querySelectorAll(".step"), function (el) {
+    stepEls[el.getAttribute("data-mark")] = el;
+  });
+  var particles = {};
+  Array.prototype.forEach.call(stage.querySelectorAll(".particle"), function (el) {
+    particles[el.getAttribute("data-particle")] = el;
+  });
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+  var layout = null;
+  var runId = 0;
+  var anims = [];
+  var cancelers = [];
+
+  function rectOf(el) {
+    var s = stage.getBoundingClientRect();
+    var a = el.getBoundingClientRect();
+    return {
+      left: a.left - s.left,
+      top: a.top - s.top,
+      right: a.right - s.left,
+      bottom: a.bottom - s.top,
+      cx: a.left - s.left + a.width / 2,
+      cy: a.top - s.top + a.height / 2
+    };
+  }
+
+  function clamp(n, min, max) {
+    return Math.max(min, Math.min(max, n));
+  }
+
+  function round(n) {
+    return Math.round(n * 10) / 10;
+  }
+
+  function pathD(points) {
+    return points.map(function (p, i) {
+      return (i === 0 ? "M" : "L") + round(p.x) + " " + round(p.y);
+    }).join(" ");
+  }
+
+  function hits(x, y1, y2, rects, self) {
+    var top = Math.min(y1, y2);
+    var bot = Math.max(y1, y2);
+    for (var i = 0; i < rects.length; i++) {
+      var r = rects[i];
+      if (r === self) continue;
+      if (x < r.left - 4 || x > r.right + 4) continue;
+      if (bot > r.top + 2 && top < r.bottom - 2) return true;
+    }
+    return false;
+  }
+
+  function markerFor(step) {
+    var phase = root.getAttribute("data-phase") || "0";
+    var on = phase === "0" || (phase === "1" && step === "1") || (phase === "2" && step === "2");
+    return on ? "url(#agent-arrow-purple)" : "url(#agent-arrow-muted)";
+  }
+
+  function addWire(points, step) {
+    var path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", pathD(points));
+    path.setAttribute("class", "wire wire-step-" + step);
+    path.setAttribute("fill", "none");
+    path.setAttribute("vector-effect", "non-scaling-stroke");
+    path.setAttribute("marker-end", markerFor(step));
+    wireGroup.appendChild(path);
+  }
+
+  function placeStep(el, x, y, w, h) {
+    el.style.transform = "translate(" + round(clamp(x, 0, Math.max(0, w - 22))) + "px, " + round(clamp(y, 0, Math.max(0, h - 22))) + "px)";
+  }
+
+  function labelOf(points) {
+    var best = 0;
+    var bi = 1;
+    for (var i = 1; i < points.length; i++) {
+      var len = Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+      if (len > best) {
+        best = len;
+        bi = i;
+      }
+    }
+    var a = points[bi - 1];
+    var b = points[bi];
+    var mx = (a.x + b.x) / 2;
+    var my = (a.y + b.y) / 2;
+    if (Math.abs(b.x - a.x) >= Math.abs(b.y - a.y)) return { x: mx - 11, y: my - 28 };
+    return { x: mx + 10, y: my - 11 };
+  }
+
+  function measure() {
+    var w = stage.clientWidth;
+    var h = stage.clientHeight;
+    if (w < 8 || h < 8) return null;
+    var src = sourceEls.map(rectOf);
+    var agent = rectOf(agentEl);
+    var user = rectOf(userEl);
+    var wrap = rectOf(sourceRow);
+    var railY = wrap.bottom + (agent.top - wrap.bottom) * 0.62;
+    var queries = src.map(function (s) {
+      var pts = [{ x: agent.cx, y: agent.top }];
+      if (hits(s.cx, agent.top, s.bottom, src, s) || Math.abs(s.cx - agent.cx) > 1) {
+        var laneX = s.cx;
+        if (hits(s.cx, s.bottom, railY, src, s)) laneX = s.cx < w / 2 ? 28 : w - 28;
+        if (Math.abs(laneX - agent.cx) > 1) {
+          pts.push({ x: agent.cx, y: railY });
+          if (laneX !== agent.cx) pts.push({ x: laneX, y: railY });
+          if (hits(s.cx, s.bottom, railY, src, s)) {
+            pts.push({ x: laneX, y: s.bottom + 8 });
+            pts.push({ x: s.cx, y: s.bottom + 8 });
+          }
+        } else {
+          pts.push({ x: s.cx, y: railY });
+        }
+      }
+      pts.push({ x: s.cx, y: s.bottom });
+      return pts;
+    });
+    var side = user.left > agent.right + 8;
+    var userToAgent = side
+      ? [{ x: user.left, y: user.cy }, { x: agent.right, y: agent.cy }]
+      : [{ x: user.cx, y: user.top }, { x: agent.cx, y: agent.bottom }];
+    if (side && Math.abs(user.cy - agent.cy) > 8) {
+      var mid = (user.left + agent.right) / 2;
+      userToAgent = [
+        { x: user.left, y: user.cy },
+        { x: mid, y: user.cy },
+        { x: mid, y: agent.cy },
+        { x: agent.right, y: agent.cy }
+      ];
+    }
+    return {
+      w: w,
+      h: h,
+      userToAgent: userToAgent,
+      queries: queries,
+      labels: {
+        user: labelOf(userToAgent),
+        webex: labelOf(queries[0]),
+        sharepoint: labelOf(queries[1]),
+        confluence: labelOf(queries[2])
+      }
+    };
+  }
+
+  function draw() {
+    layout = measure();
+    if (!layout) return;
+    svg.setAttribute("viewBox", "0 0 " + layout.w + " " + layout.h);
+    svg.setAttribute("width", String(layout.w));
+    svg.setAttribute("height", String(layout.h));
+    wireGroup.textContent = "";
+    addWire(layout.userToAgent, "1");
+    layout.queries.forEach(function (pts) { addWire(pts, "2"); });
+    Object.keys(stepEls).forEach(function (key) {
+      placeStep(stepEls[key], layout.labels[key].x, layout.labels[key].y, layout.w, layout.h);
+    });
+    root.setAttribute("data-ready", "true");
+  }
+
+  function hideParticles() {
+    Object.keys(particles).forEach(function (key) {
+      particles[key].style.visibility = "hidden";
+    });
+  }
+
+  function clearHot() {
+    sourceEls.forEach(function (el) { el.classList.remove("is-hot-req"); });
+    agentEl.classList.remove("is-hot-req");
+    userEl.classList.remove("is-hot-req");
+  }
+
+  function setStatus(text) {
+    statusEl.hidden = false;
+    statusEl.textContent = text;
+  }
+
+  function setPhase(phase) {
+    root.setAttribute("data-phase", String(phase));
+    draw();
+  }
+
+  function stopMotion() {
+    cancelers.forEach(function (fn) { fn(); });
+    cancelers = [];
+    anims.forEach(function (anim) {
+      anim.onfinish = null;
+      anim.oncancel = null;
+      anim.cancel();
+    });
+    anims = [];
+    hideParticles();
+  }
+
+  function wait(ms) {
+    return new Promise(function (resolve) {
+      var done = false;
+      function finish(ok) {
+        if (done) return;
+        done = true;
+        resolve(ok);
+      }
+      var t = setTimeout(function () { finish(true); }, ms);
+      cancelers.push(function () {
+        clearTimeout(t);
+        finish(false);
+      });
+    });
+  }
+
+  function duration(points) {
+    var len = 0;
+    for (var i = 1; i < points.length; i++) {
+      len += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+    }
+    return Math.max(360, Math.min(780, Math.round(len * 1.4)));
+  }
+
+  function runParticle(el, points, hold) {
+    return new Promise(function (resolve) {
+      if (reduced.matches || !points || points.length < 2) {
+        resolve(true);
+        return;
+      }
+      el.style.visibility = "visible";
+      var anim = el.animate(points.map(function (p) {
+        return { transform: "translate(" + round(p.x - 4) + "px, " + round(p.y - 4) + "px)" };
+      }), { duration: duration(points), easing: "linear", fill: "forwards" });
+      anims.push(anim);
+      var done = false;
+      function finish(ok) {
+        if (done) return;
+        done = true;
+        if (!hold) el.style.visibility = "hidden";
+        resolve(ok);
+      }
+      anim.onfinish = function () { finish(true); };
+      anim.oncancel = function () { finish(false); };
+      cancelers.push(function () { anim.cancel(); });
+    });
+  }
+
+  async function play() {
+    var my = ++runId;
+    stopMotion();
+    clearHot();
+    button.setAttribute("aria-busy", "true");
+    if (!layout) draw();
+    if (!layout) {
+      button.removeAttribute("aria-busy");
+      return;
+    }
+    setPhase(1);
+    setStatus("User requests MyAgent.");
+    userEl.classList.add("is-hot-req");
+    agentEl.classList.add("is-hot-req");
+    if (!(await runParticle(particles.user, layout.userToAgent)) || my !== runId) return;
+    if (!(await wait(reduced.matches ? 420 : 120)) || my !== runId) return;
+    userEl.classList.remove("is-hot-req");
+    setPhase(2);
+    var names = ["Webex", "Sharepoint", "Confluence"];
+    var keys = ["webex", "sharepoint", "confluence"];
+    for (var i = 0; i < keys.length; i++) {
+      if (my !== runId) return;
+      setStatus("MyAgent queries " + names[i] + ".");
+      sourceEls[i].classList.add("is-hot-req");
+      if (!(await runParticle(particles[keys[i]], layout.queries[i], true)) || my !== runId) return;
+      if (!(await wait(reduced.matches ? 280 : 80)) || my !== runId) return;
+      if (!(await runParticle(particles[keys[i]], layout.queries[i].slice().reverse())) || my !== runId) return;
+      sourceEls[i].classList.remove("is-hot-req");
+      if (!(await wait(reduced.matches ? 200 : 60)) || my !== runId) return;
+    }
+    if (my !== runId) return;
+    clearHot();
+    setPhase(0);
+    setStatus("MyAgent read the sources.");
+    button.removeAttribute("aria-busy");
+  }
+
+  button.addEventListener("click", function () { play(); });
+  if (typeof ResizeObserver === "function") {
+    var observer = new ResizeObserver(function () {
+      runId++;
+      stopMotion();
+      clearHot();
+      button.removeAttribute("aria-busy");
+      if (root.getAttribute("data-phase") !== "0") setPhase(0);
+      else draw();
+    });
+    observer.observe(stage);
+  }
+  draw();
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(function () {
+      if (button.getAttribute("aria-busy") !== "true") draw();
+    });
+  }
+})();
+  </script>
+  <script>
+(function () {
+  var root = document.getElementById("prop");
+  var stage = document.getElementById("prop-stage");
+  var svg = stage.querySelector("svg.wires");
+  var wireGroup = document.getElementById("prop-wires");
+  var button = document.getElementById("prop-play");
+  var statusEl = document.getElementById("prop-status");
+  var sourceEls = Array.prototype.slice.call(stage.querySelectorAll(".src"));
+  var sourceRow = stage.querySelector(".source-row");
+  var node = {};
+  ["dynamic", "static", "tome", "assistant", "myagent", "mcp", "user"].forEach(function (name) {
+    node[name] = stage.querySelector('[data-node="' + name + '"]');
+  });
+  var channels = ["assistant", "myagent", "mcp"];
+  var stepEls = {};
+  Array.prototype.forEach.call(stage.querySelectorAll(".step"), function (el) {
+    stepEls[el.getAttribute("data-mark")] = el;
+  });
+  var particles = {};
+  Array.prototype.forEach.call(stage.querySelectorAll(".particle"), function (el) {
+    particles[el.getAttribute("data-particle")] = el;
+  });
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+  var layout = null;
+  var runId = 0;
+  var anims = [];
+  var cancelers = [];
+
+  function rectOf(el) {
+    var s = stage.getBoundingClientRect();
+    var a = el.getBoundingClientRect();
+    return {
+      left: a.left - s.left, top: a.top - s.top, right: a.right - s.left, bottom: a.bottom - s.top,
+      cx: a.left - s.left + a.width / 2, cy: a.top - s.top + a.height / 2
+    };
+  }
+  function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+  function round(n) { return Math.round(n * 10) / 10; }
+  function pathD(points) {
+    return points.map(function (p, i) { return (i === 0 ? "M" : "L") + round(p.x) + " " + round(p.y); }).join(" ");
+  }
+  function markerFor(kind) {
+    var phase = root.getAttribute("data-phase") || "0";
+    var on = phase === "0" ||
+      (kind === "live" && phase === "1") ||
+      (kind === "direct" && phase === "4") ||
+      (kind === "1" && phase === "2") ||
+      (kind === "2" && phase === "3") ||
+      (kind === "3" && phase === "5");
+    if (!on) return "url(#prop-arrow-muted)";
+    return kind === "live" ? "url(#prop-arrow-blue)" : "url(#prop-arrow-purple)";
+  }
+  function addWire(points, kind, withArrow) {
+    var path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    var cls = kind === "live" || kind === "direct" ? "wire-" + kind : "wire-request wire-step-" + kind;
+    path.setAttribute("d", pathD(points));
+    path.setAttribute("class", "wire " + cls);
+    path.setAttribute("fill", "none");
+    path.setAttribute("vector-effect", "non-scaling-stroke");
+    if (withArrow !== false) path.setAttribute("marker-end", markerFor(kind));
+    wireGroup.appendChild(path);
+  }
+  function drawBus(paths, kind, railY) {
+    var minX = Infinity;
+    var maxX = -Infinity;
+    var seen = {};
+    paths.forEach(function (pts) {
+      var chunk = [pts[0]];
+      function flush(arrow) {
+        if (chunk.length < 2) return;
+        var d = pathD(chunk);
+        if (seen[d]) return;
+        seen[d] = true;
+        addWire(chunk, kind, arrow);
+      }
+      for (var i = 1; i < pts.length; i++) {
+        var a = pts[i - 1];
+        var b = pts[i];
+        var onRail = Math.abs(a.y - railY) < 1 && Math.abs(b.y - railY) < 1;
+        if (onRail) {
+          minX = Math.min(minX, a.x, b.x);
+          maxX = Math.max(maxX, a.x, b.x);
+          flush(false);
+          chunk = [b];
+        } else {
+          chunk.push(b);
+        }
+      }
+      flush(true);
+    });
+    if (maxX - minX > 1) addWire([{ x: minX, y: railY }, { x: maxX, y: railY }], kind, false);
+  }
+  function placeStep(el, x, y, w, h) {
+    el.style.transform = "translate(" + round(clamp(x, 0, Math.max(0, w - 22))) + "px, " + round(clamp(y, 0, Math.max(0, h - 22))) + "px)";
+  }
+  function labelOf(points) {
+    var best = 0, bi = 1;
+    for (var i = 1; i < points.length; i++) {
+      var len = Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+      if (len > best) { best = len; bi = i; }
+    }
+    var a = points[bi - 1], b = points[bi];
+    var mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    if (Math.abs(b.x - a.x) >= Math.abs(b.y - a.y)) return { x: mx - 11, y: my - 28 };
+    return mx < stage.clientWidth / 2 ? { x: mx - 30, y: my - 11 } : { x: mx + 12, y: my - 11 };
+  }
+  function spread(box, i, n) {
+    if (n === 1) return box.cx;
+    return box.left + 14 + i * ((box.right - box.left - 28) / (n - 1));
+  }
+
+  function measure() {
+    var w = stage.clientWidth, h = stage.clientHeight;
+    if (w < 8 || h < 8) return null;
+    var src = sourceEls.map(rectOf);
+    var box = {};
+    Object.keys(node).forEach(function (key) { box[key] = rectOf(node[key]); });
+    var wrap = rectOf(sourceRow);
+    var limit = Math.min(box.dynamic.top, box.static.top, box.tome.top, box.assistant.top, box.myagent.top, box.mcp.top, box.user.top);
+    var room = Math.max(36, limit - wrap.bottom);
+    var railUpdate = wrap.bottom + Math.max(12, room * 0.22);
+    var railRequest = railUpdate + Math.max(36, room * 0.46);
+    if (railRequest > limit - 8) {
+      railRequest = limit - 8;
+      railUpdate = Math.max(wrap.bottom + 8, railRequest - 22);
+    }
+    var updates = src.map(function (s, i) {
+      var land = spread(box.dynamic, i, src.length);
+      var x = s.cx - 6;
+      return [
+        { x: x, y: s.bottom },
+        { x: x, y: railUpdate },
+        { x: land, y: railUpdate },
+        { x: land, y: box.dynamic.top }
+      ];
+    });
+    var stacked = box.dynamic.bottom < box.tome.top - 4;
+    var directs = src.map(function (s, i) {
+      var land = spread(box.tome, i, src.length);
+      var x = s.cx + 6;
+      if (!stacked) {
+        return [
+          { x: land, y: box.tome.top },
+          { x: land, y: railRequest },
+          { x: x, y: railRequest },
+          { x: x, y: s.bottom }
+        ];
+      }
+      var lane = Math.min(w - 12, Math.max(box.tome.right, box.static.right, box.dynamic.right) + 18);
+      return [
+        { x: box.tome.right, y: box.tome.cy },
+        { x: lane, y: box.tome.cy },
+        { x: lane, y: railRequest },
+        { x: x, y: railRequest },
+        { x: x, y: s.bottom }
+      ];
+    });
+    var side = box.assistant.left > box.tome.right + 8;
+    function blocked(x, y1, y2, rect) {
+      var top = Math.min(y1, y2), bot = Math.max(y1, y2);
+      return x > rect.left + 2 && x < rect.right - 2 && bot > rect.top + 2 && top < rect.bottom - 2;
+    }
+    function linkPages(page) {
+      if (page.right < box.tome.left - 4) {
+        var y = clamp(page.cy, box.tome.top + 10, box.tome.bottom - 10);
+        if (Math.abs(y - page.cy) < 8) return [{ x: box.tome.left, y: page.cy }, { x: page.right, y: page.cy }];
+        var mid = (box.tome.left + page.right) / 2;
+        return [{ x: box.tome.left, y: y }, { x: mid, y: y }, { x: mid, y: page.cy }, { x: page.right, y: page.cy }];
+      }
+      if (page.bottom <= box.tome.top + 4 && blocked(box.tome.cx, box.tome.top, page.bottom, box.static) && page !== box.static) {
+        var lane = Math.max(8, Math.min(page.left, box.static.left, box.tome.left) - 16);
+        return [
+          { x: box.tome.left, y: box.tome.cy },
+          { x: lane, y: box.tome.cy },
+          { x: lane, y: page.cy },
+          { x: page.left, y: page.cy }
+        ];
+      }
+      if (page.bottom <= box.tome.top + 4) {
+        return [{ x: box.tome.cx, y: box.tome.top }, { x: page.cx, y: page.bottom }];
+      }
+      return [{ x: box.tome.cx, y: box.tome.bottom }, { x: page.cx, y: page.top }];
+    }
+    function toTome(ch) {
+      if (side) {
+        var y = clamp(ch.cy, box.tome.top + 10, box.tome.bottom - 10);
+        if (Math.abs(y - ch.cy) < 8) return [{ x: ch.left, y: ch.cy }, { x: box.tome.right, y: ch.cy }];
+        var mid = (ch.left + box.tome.right) / 2;
+        return [{ x: ch.left, y: ch.cy }, { x: mid, y: ch.cy }, { x: mid, y: y }, { x: box.tome.right, y: y }];
+      }
+      var join = (ch.top + box.tome.bottom) / 2;
+      return [{ x: ch.cx, y: ch.top }, { x: ch.cx, y: join }, { x: box.tome.cx, y: join }, { x: box.tome.cx, y: box.tome.bottom }];
+    }
+    function fromUser(ch) {
+      if (box.user.left > ch.right + 8) {
+        if (Math.abs(box.user.cy - ch.cy) < 8) return [{ x: box.user.left, y: box.user.cy }, { x: ch.right, y: ch.cy }];
+        var mid = (box.user.left + ch.right) / 2;
+        return [{ x: box.user.left, y: box.user.cy }, { x: mid, y: box.user.cy }, { x: mid, y: ch.cy }, { x: ch.right, y: ch.cy }];
+      }
+      var lane = Math.max(8, Math.min(box.user.left, ch.left) - 18);
+      return [{ x: box.user.left, y: box.user.cy }, { x: lane, y: box.user.cy }, { x: lane, y: ch.cy }, { x: ch.left, y: ch.cy }];
+    }
+    var userPaths = {};
+    var tomePaths = {};
+    channels.forEach(function (name) {
+      userPaths[name] = fromUser(box[name]);
+      tomePaths[name] = toTome(box[name]);
+    });
+    var out = {
+      w: w, h: h, stacked: stacked,
+      railUpdate: railUpdate,
+      railRequest: railRequest,
+      updates: updates,
+      directs: directs,
+      userPaths: userPaths,
+      tomePaths: tomePaths,
+      toDynamic: linkPages(box.dynamic),
+      toStatic: linkPages(box.static),
+      labels: {
+        assistant: labelOf(userPaths.assistant),
+        myagent: labelOf(userPaths.myagent),
+        mcp: labelOf(userPaths.mcp),
+        "assistant-tome": labelOf(tomePaths.assistant),
+        "myagent-tome": labelOf(tomePaths.myagent),
+        "mcp-tome": labelOf(tomePaths.mcp),
+        dynamic: labelOf(linkPages(box.dynamic)),
+        static: labelOf(linkPages(box.static))
+      }
+    };
+    directs.forEach(function (pts, i) {
+      var x = pts[pts.length - 1].x;
+      out.labels["src-" + i] = {
+        x: x + 8,
+        y: out.railRequest - 26
+      };
+    });
+    return out;
+  }
+
+  function draw() {
+    layout = measure();
+    if (!layout) return;
+    svg.setAttribute("viewBox", "0 0 " + layout.w + " " + layout.h);
+    svg.setAttribute("width", String(layout.w));
+    svg.setAttribute("height", String(layout.h));
+    wireGroup.textContent = "";
+    drawBus(layout.updates, "live", layout.railUpdate);
+    drawBus(layout.directs, "direct", layout.railRequest);
+    channels.forEach(function (name) {
+      addWire(layout.userPaths[name], "1");
+      addWire(layout.tomePaths[name], "2");
+    });
+    addWire(layout.toDynamic, "3");
+    addWire(layout.toStatic, "3");
+    var keep = { assistant: 1, "assistant-tome": 1, dynamic: 1, static: 1, "src-0": 1 };
+    Object.keys(stepEls).forEach(function (key) {
+      stepEls[key].hidden = layout.stacked && !keep[key];
+      placeStep(stepEls[key], layout.labels[key].x, layout.labels[key].y, layout.w, layout.h);
+    });
+    root.setAttribute("data-ready", "true");
+  }
+
+  function hideParticles() {
+    Object.keys(particles).forEach(function (key) { particles[key].style.visibility = "hidden"; });
+  }
+  function clearHot() {
+    sourceEls.forEach(function (el) { el.classList.remove("is-hot", "is-hot-req"); });
+    Object.keys(node).forEach(function (key) { node[key].classList.remove("is-hot", "is-hot-req"); });
+  }
+  function setStatus(text) { statusEl.hidden = false; statusEl.textContent = text; }
+  function setPhase(phase) { root.setAttribute("data-phase", String(phase)); draw(); }
+  function stopMotion() {
+    cancelers.forEach(function (fn) { fn(); });
+    cancelers = [];
+    anims.forEach(function (anim) { anim.onfinish = null; anim.oncancel = null; anim.cancel(); });
+    anims = [];
+    hideParticles();
+  }
+  function wait(ms) {
+    return new Promise(function (resolve) {
+      var done = false;
+      function finish(ok) { if (done) return; done = true; resolve(ok); }
+      var t = setTimeout(function () { finish(true); }, ms);
+      cancelers.push(function () { clearTimeout(t); finish(false); });
+    });
+  }
+  function duration(points) {
+    var len = 0;
+    for (var i = 1; i < points.length; i++) len += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+    return Math.max(340, Math.min(760, Math.round(len * 1.25)));
+  }
+  function runParticle(el, points, hold) {
+    return new Promise(function (resolve) {
+      if (reduced.matches || !points || points.length < 2) { resolve(true); return; }
+      el.style.visibility = "visible";
+      var anim = el.animate(points.map(function (p) {
+        return { transform: "translate(" + round(p.x - 4) + "px, " + round(p.y - 4) + "px)" };
+      }), { duration: duration(points), easing: "linear", fill: "forwards" });
+      anims.push(anim);
+      var done = false;
+      function finish(ok) { if (done) return; done = true; if (!hold) el.style.visibility = "hidden"; resolve(ok); }
+      anim.onfinish = function () { finish(true); };
+      anim.oncancel = function () { finish(false); };
+      cancelers.push(function () { anim.cancel(); });
+    });
+  }
+
+  async function play() {
+    var my = ++runId;
+    stopMotion();
+    clearHot();
+    button.setAttribute("aria-busy", "true");
+    if (!layout) draw();
+    if (!layout) { button.removeAttribute("aria-busy"); return; }
+
+    setPhase(1);
+    setStatus("Sources pull dynamic pages live.");
+    node.dynamic.classList.add("is-hot");
+    if (reduced.matches) {
+      sourceEls.forEach(function (el) { el.classList.add("is-hot"); });
+      if (!(await wait(700)) || my !== runId) return;
+    } else {
+      for (var i = 0; i < sourceEls.length; i++) {
+        if (my !== runId) return;
+        sourceEls[i].classList.add("is-hot");
+        await runParticle(particles["u" + i], layout.updates[i]);
+        if (my !== runId) return;
+        sourceEls[i].classList.remove("is-hot");
+      }
+    }
+
+    var labels = { assistant: "Assistant", myagent: "MyAgent", mcp: "MCP" };
+    for (var c = 0; c < channels.length; c++) {
+      var name = channels[c];
+      if (my !== runId) return;
+      clearHot();
+      setPhase(2);
+      setStatus("User requests through " + labels[name] + ".");
+      node.user.classList.add("is-hot-req");
+      node[name].classList.add("is-hot-req");
+      if (!(await runParticle(particles.user, layout.userPaths[name])) || my !== runId) return;
+      if (!(await wait(reduced.matches ? 320 : 70)) || my !== runId) return;
+      setPhase(3);
+      setStatus(labels[name] + " reaches TOME.");
+      node.tome.classList.add("is-hot-req");
+      if (!(await runParticle(particles.channel, layout.tomePaths[name])) || my !== runId) return;
+      if (!(await wait(reduced.matches ? 280 : 80)) || my !== runId) return;
+    }
+
+    clearHot();
+    setPhase(4);
+    setStatus("TOME queries the sources.");
+    node.tome.classList.add("is-hot-req");
+    for (var q = 0; q < sourceEls.length; q++) {
+      if (my !== runId) return;
+      sourceEls[q].classList.add("is-hot-req");
+      if (!(await runParticle(particles.query, layout.directs[q], true)) || my !== runId) return;
+      if (!(await wait(reduced.matches ? 180 : 40)) || my !== runId) return;
+      if (!(await runParticle(particles.query, layout.directs[q].slice().reverse())) || my !== runId) return;
+      sourceEls[q].classList.remove("is-hot-req");
+    }
+
+    setPhase(5);
+    setStatus("TOME queries static pages.");
+    node.static.classList.add("is-hot-req");
+    if (!(await runParticle(particles.query, layout.toStatic, true)) || my !== runId) return;
+    if (!(await wait(reduced.matches ? 280 : 80)) || my !== runId) return;
+    if (!(await runParticle(particles.query, layout.toStatic.slice().reverse())) || my !== runId) return;
+    node.static.classList.remove("is-hot-req");
+    setStatus("TOME queries dynamic pages.");
+    node.dynamic.classList.add("is-hot-req");
+    if (!(await runParticle(particles.query, layout.toDynamic, true)) || my !== runId) return;
+    if (!(await wait(reduced.matches ? 280 : 80)) || my !== runId) return;
+    if (!(await runParticle(particles.query, layout.toDynamic.slice().reverse())) || my !== runId) return;
+
+    if (my !== runId) return;
+    clearHot();
+    setPhase(0);
+    setStatus("TOME read the sources, static pages, and dynamic pages.");
+    button.removeAttribute("aria-busy");
+  }
+
+  button.addEventListener("click", function () { play(); });
+  if (typeof ResizeObserver === "function") {
+    var observer = new ResizeObserver(function () {
+      runId++;
+      stopMotion();
+      clearHot();
+      button.removeAttribute("aria-busy");
+      if (root.getAttribute("data-phase") !== "0") setPhase(0);
+      else draw();
+    });
+    observer.observe(stage);
+  }
+  draw();
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(function () {
+      if (button.getAttribute("aria-busy") !== "true") draw();
+    });
+  }
+})();
+  </script>
+</body>
+</html>
